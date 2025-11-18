@@ -275,25 +275,7 @@ struct TimelineControlBar: View {
     }
 }
 
-struct SpeedButton: View {
-    @EnvironmentObject var gameVM: GameViewModel
-    let multiplier: Double
-    let current: Double
-    
-    var body: some View {
-        Button(action: {
-            gameVM.setCharterSpeed(multiplier: multiplier)
-        }) {
-            Text("\(Int(multiplier))x")
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundColor(multiplier == current ? .white : .primary)
-                .frame(width: 40, height: 32)
-                .background(multiplier == current ? Color.blue : Color(.systemGray5))
-                .cornerRadius(6)
-        }
-    }
-}
+// SpeedButton is now defined in CharterClockView.swift
 
 // MARK: - Status Menu View
 struct StatusMenuView: View {
