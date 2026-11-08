@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import CoreLocation
 
 @MainActor
 final class GameViewModel: ObservableObject {
@@ -14,14 +15,34 @@ final class GameViewModel: ObservableObject {
     @Published var currentTripSummary: TripSummary?
     @Published var toastMessage: String?
     @Published var showingActiveCharter: Bool = false
+    @Published var isLoading: Bool = true
+    @Published var loadingProgress: Double = 0.0
     
     // Active charter simulation timer
     private var charterTimer: Timer?
 
     init() {
         self.gameState = GameState()
-        loadCatalogs()
-        generateStarterCharters()
+        Task {
+            let startTime = Date()
+            
+            await loadCatalogsWithProgress()
+            generateStarterCharters()
+            
+            // Ensure loading screen shows for at least 5 seconds total
+            let minLoadingTime: TimeInterval = 5.0 // 5 seconds
+            let elapsed = Date().timeIntervalSince(startTime)
+            
+            if elapsed < minLoadingTime {
+                let remainingTime = minLoadingTime - elapsed
+                try? await Task.sleep(nanoseconds: UInt64(remainingTime * 1_000_000_000))
+            }
+            
+            // Fade out effect - delay before hiding
+            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds for fade out
+            
+            isLoading = false
+        }
     }
     
     deinit {
@@ -60,6 +81,45 @@ final class GameViewModel: ObservableObject {
             crewCatalog = []
             print("❌ Failed to load crew.json - using empty catalog")
         }
+    }
+    
+    @MainActor
+    func loadCatalogsWithProgress() async {
+        loadingProgress = 0.0
+        
+        // Load vessels (33% of progress)
+        if let vessels: [Vessel] = loadJSON(filename: "vessels") {
+            vesselCatalog = vessels
+            print("✅ Loaded \(vessels.count) vessels")
+        } else {
+            vesselCatalog = []
+            print("❌ Failed to load vessels.json - using empty catalog")
+        }
+        loadingProgress = 0.33
+        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+        
+        // Load captains (33% more)
+        if var captains: [Captain] = loadJSON(filename: "captains") {
+            captains = captains.map { var c = $0; c.isHired = false; return c }
+            captainCatalog = captains
+            print("✅ Loaded \(captains.count) captains")
+        } else {
+            captainCatalog = []
+            print("❌ Failed to load captains.json - using empty catalog")
+        }
+        loadingProgress = 0.66
+        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+        
+        // Load crew (remaining progress)
+        if var crew: [CrewMember] = loadJSON(filename: "crew") {
+            crew = crew.map { var c = $0; c.isHired = false; c.currentStress = 0.0; return c }
+            crewCatalog = crew
+            print("✅ Loaded \(crew.count) crew members")
+        } else {
+            crewCatalog = []
+            print("❌ Failed to load crew.json - using empty catalog")
+        }
+        loadingProgress = 1.0
     }
 
     private func loadJSON<T: Decodable>(filename: String) -> T? {
@@ -191,6 +251,19 @@ final class GameViewModel: ObservableObject {
         showToast("Assigned \(gameState.hiredCaptains[captainIndex].name) to \(gameState.ownedVessels[vesselIndex].name)")
     }
     
+    func unassignCaptainFromVessel(vesselId: String) {
+        guard let vesselIndex = gameState.ownedVessels.firstIndex(where: { $0.id == vesselId }),
+              let captainId = gameState.ownedVessels[vesselIndex].assignedCaptain,
+              let captainIndex = gameState.hiredCaptains.firstIndex(where: { $0.id == captainId }) else {
+            return
+        }
+        
+        gameState.ownedVessels[vesselIndex].assignedCaptain = nil
+        gameState.hiredCaptains[captainIndex].currentVessel = nil
+        
+        showToast("Unassigned captain from \(gameState.ownedVessels[vesselIndex].name)")
+    }
+    
     // MARK: - Crew Management
     func hireCrew(_ crew: CrewMember) {
         guard !crew.isHired else {
@@ -248,6 +321,44 @@ final class GameViewModel: ObservableObject {
         }
         
         gameState.hiredCrew[crewIndex].currentVessel = nil
+        showToast("Unassigned \(gameState.hiredCrew[crewIndex].name) from vessel")
+    }
+    
+    func assignAllAvailableStaffToVessel(vesselId: String) {
+        guard let vesselIndex = gameState.ownedVessels.firstIndex(where: { $0.id == vesselId }) else {
+            return
+        }
+        
+        let vessel = gameState.ownedVessels[vesselIndex]
+        var assignedCount = 0
+        
+        // Assign captain if available and vessel doesn't have one
+        if vessel.assignedCaptain == nil {
+            if let availableCaptain = gameState.hiredCaptains.first(where: { $0.isHired && $0.currentVessel == nil }) {
+                assignCaptainToVessel(captainId: availableCaptain.id, vesselId: vesselId)
+                assignedCount += 1
+            }
+        }
+        
+        // Assign crew up to max capacity
+        let currentCrewCount = vessel.assignedCrew.count
+        let remainingSlots = vessel.crewMax - currentCrewCount
+        
+        if remainingSlots > 0 {
+            let availableCrew = gameState.hiredCrew.filter { $0.isHired && $0.currentVessel == nil }
+            let crewToAssign = Array(availableCrew.prefix(remainingSlots))
+            
+            for crew in crewToAssign {
+                assignCrewToVessel(crewId: crew.id, vesselId: vesselId)
+                assignedCount += 1
+            }
+        }
+        
+        if assignedCount > 0 {
+            showToast("Assigned \(assignedCount) staff member\(assignedCount == 1 ? "" : "s") to \(vessel.name)")
+        } else {
+            showToast("No available staff to assign")
+        }
     }
 
     // MARK: - Charter Management
@@ -347,7 +458,9 @@ final class GameViewModel: ObservableObject {
             return
         }
         
-        let distance = PortRegistry.distance(from: originPort, to: destPort)
+        // Calculate maritime route with waypoints
+        let route = MaritimeRouter.calculateRoute(from: originPort, to: destPort)
+        let distance = route.totalDistanceNM
         
         gameState.activeCharterState = ActiveCharterState(
             charterId: charter.id,
@@ -365,7 +478,10 @@ final class GameViewModel: ObservableObject {
             startTime: Date(),
             elapsedTime: 0,
             isPaused: false,
-            speedMultiplier: 1.0
+            speedMultiplier: 1.0,
+            route: route,
+            riskCheckAccumulator: 0.0,
+            eventCheckAccumulator: 0.0
         )
         
         startCharterSimulation()
@@ -405,24 +521,40 @@ final class GameViewModel: ObservableObject {
         let timeDelta = baseSpeedPerTick * charterState.speedMultiplier
         charterState.elapsedTime += timeDelta
         
+        // Store timeDelta for use in updateCharterMetrics to scale changes properly
+        let hoursDelta = timeDelta / 3600.0 // Convert seconds to hours
+        
         // Calculate progress
         let totalDuration = charter.durationDays * 86400 // Convert days to seconds
         let progress = min(1.0, charterState.elapsedTime / totalDuration)
         
-        // Update position (interpolate between origin and destination)
-        let lat = originPort.latitude + (destPort.latitude - originPort.latitude) * progress
-        let lon = originPort.longitude + (destPort.longitude - originPort.longitude) * progress
+        // Update position using maritime route if available
+        let position: CLLocationCoordinate2D
+        let distanceRemaining: Double
         
-        let distance = PortRegistry.distance(from: originPort, to: destPort)
+        if let route = charterState.route {
+            // Use waypoint-based route
+            position = MaritimeRouter.positionAlongRoute(route, progress: progress)
+            distanceRemaining = MaritimeRouter.distanceRemaining(route, progress: progress)
+        } else {
+            // Fallback to straight-line interpolation
+            position = CLLocationCoordinate2D(
+                latitude: originPort.latitude + (destPort.latitude - originPort.latitude) * progress,
+                longitude: originPort.longitude + (destPort.longitude - originPort.longitude) * progress
+            )
+            let distance = PortRegistry.distance(from: originPort, to: destPort)
+            distanceRemaining = distance * (1.0 - progress)
+        }
+        
         charterState.currentPosition = RoutePosition(
             progress: progress,
-            currentLatitude: lat,
-            currentLongitude: lon,
-            distanceRemaining: distance * (1.0 - progress)
+            currentLatitude: position.latitude,
+            currentLongitude: position.longitude,
+            distanceRemaining: distanceRemaining
         )
         
-        // Update guest happiness and staff stress
-        updateCharterMetrics(&charterState, charter: charter, vessel: vessel)
+        // Update guest happiness and staff stress (pass timeDelta for proper scaling)
+        updateCharterMetrics(&charterState, charter: charter, vessel: vessel, hoursDelta: hoursDelta)
         
         // Update weather (random changes)
         if Int.random(in: 0...100) < 5 { // 5% chance per update
@@ -430,24 +562,103 @@ final class GameViewModel: ObservableObject {
             charterState.windSpeed = Double.random(in: 5...25)
         }
         
-        // Generate charter events
-        let crewCount = vessel.assignedCrew.count + (vessel.assignedCaptain != nil ? 1 : 0)
-        if let event = CharterEventGenerator.generateEvent(
-            charterState: charterState,
-            vessel: vessel,
-            crewCount: crewCount,
-            crewStress: charterState.staffStress
-        ) {
-            // Apply event impact
-            charterState.guestHappiness = max(0.0, min(100.0, charterState.guestHappiness + event.impact.guestHappinessDelta))
-            charterState.staffStress = max(0.0, min(100.0, charterState.staffStress + event.impact.staffStressDelta))
+        // Check for provision package risks (check roughly once per hour of game time)
+        charterState.riskCheckAccumulator += hoursDelta
+        
+        if charterState.riskCheckAccumulator >= 1.0 { // Check once per hour
+            charterState.riskCheckAccumulator = 0.0
             
-            // Add event to history
-            gameState.charterEvents.append(event)
+            if let selectedPackages = gameState.vesselProvisionPackages[vessel.id] {
+                for packageId in selectedPackages.packages {
+                    if let package = ProvisionPackageCatalog.package(withId: packageId),
+                       let riskChance = package.riskChance,
+                       let riskImpact = package.riskImpact {
+                        // Check if risk occurs (1/10 = 0.1 chance)
+                        if Double.random(in: 0...1) < riskChance {
+                            // Special handling for Security Guard (only triggers if incident occurs)
+                            if package.id == "security_guard" && riskImpact > 0 {
+                                // Security guard prevents incident - check if incident would have occurred
+                                // This is handled in event generation below
+                                continue
+                            }
+                            
+                            // Risk occurred
+                            charterState.guestHappiness = max(0.0, min(100.0, charterState.guestHappiness + riskImpact))
+                            
+                            // Create event for risk
+                            let event = CharterEvent(
+                                id: UUID().uuidString,
+                                type: riskImpact > 0 ? .guestPraise : .guestComplaint,
+                                message: package.specialCondition ?? "\(package.name) effect: \(riskImpact > 0 ? "+" : "")\(Int(riskImpact))% satisfaction",
+                                timestamp: charterState.elapsedTime,
+                                impact: CharterEvent.EventImpact(
+                                    guestHappinessDelta: riskImpact,
+                                    staffStressDelta: 0.0,
+                                    costDelta: 0.0
+                                )
+                            )
+                            gameState.charterEvents.append(event)
+                            
+                            if abs(riskImpact) > 5 {
+                                showToast(riskImpact > 0 ? "✨ \(event.message)" : "⚠️ \(event.message)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Generate charter events (reduced frequency - check roughly once per hour)
+        charterState.eventCheckAccumulator += hoursDelta
+        
+        if charterState.eventCheckAccumulator >= 1.0 { // Check once per hour
+            charterState.eventCheckAccumulator = 0.0
             
-            // Show notification for significant events
-            if abs(event.impact.guestHappinessDelta) > 5 || abs(event.impact.staffStressDelta) > 5 {
-                showToast("⚠️ \(event.message)")
+            let crewCount = vessel.assignedCrew.count + (vessel.assignedCaptain != nil ? 1 : 0)
+            
+            // Check for Security Guard incident prevention first
+            let hasSecurityGuard = gameState.vesselProvisionPackages[vessel.id]?.packages.contains("security_guard") ?? false
+            var incidentPrevented = false
+            
+            if let event = CharterEventGenerator.generateEvent(
+                charterState: charterState,
+                vessel: vessel,
+                crewCount: crewCount,
+                crewStress: charterState.staffStress
+            ) {
+                // Check if Security Guard prevents negative incident
+                if hasSecurityGuard && event.impact.guestHappinessDelta < 0 && Double.random(in: 0...1) < 0.1 {
+                    // Security guard prevents incident (1/10 chance)
+                    incidentPrevented = true
+                    charterState.guestHappiness = max(0.0, min(100.0, charterState.guestHappiness + 50.0))
+                    
+                    let preventionEvent = CharterEvent(
+                        id: UUID().uuidString,
+                        type: .guestPraise,
+                        message: "Security guard prevented incident: \(event.message)",
+                        timestamp: charterState.elapsedTime,
+                        impact: CharterEvent.EventImpact(
+                            guestHappinessDelta: 50.0,
+                            staffStressDelta: -5.0,
+                            costDelta: 0.0
+                        )
+                    )
+                    gameState.charterEvents.append(preventionEvent)
+                    showToast("🛡️ Security guard prevented incident! +50% satisfaction")
+                } else {
+                    // Apply event impact normally
+                    charterState.guestHappiness = max(0.0, min(100.0, charterState.guestHappiness + event.impact.guestHappinessDelta))
+                    charterState.staffStress = max(0.0, min(100.0, charterState.staffStress + event.impact.staffStressDelta))
+                    
+                    // Add event to history
+                    gameState.charterEvents.append(event)
+                    
+                    // Show notification for significant events
+                    if abs(event.impact.guestHappinessDelta) > 5 || abs(event.impact.staffStressDelta) > 5 {
+                        let icon = event.impact.guestHappinessDelta > 0 ? "✨" : "⚠️"
+                        showToast("\(icon) \(event.message)")
+                    }
+                }
             }
         }
         
@@ -462,72 +673,207 @@ final class GameViewModel: ObservableObject {
         }
     }
     
-    func updateCharterMetrics(_ charterState: inout ActiveCharterState, charter: Charter, vessel: Vessel) {
-        // Calculate crew performance
+    func updateCharterMetrics(_ charterState: inout ActiveCharterState, charter: Charter, vessel: Vessel, hoursDelta: Double) {
+        // Calculate crew performance (improved starting scores)
         let crewPerformance = calculateCrewPerformance(vessel: vessel)
         
+        // Calculate provisions impact from packages (new system)
+        var provisionsSatisfactionBonus = 0.0
+        if let selectedPackages = gameState.vesselProvisionPackages[vessel.id] {
+            provisionsSatisfactionBonus = selectedPackages.totalSatisfactionBonus
+        } else if let provisions = gameState.vesselProvisions[vessel.id] {
+            // Legacy system fallback
+            let crewCount = vessel.assignedCrew.count + (vessel.assignedCaptain != nil ? 1 : 0)
+            let requiredUnits = ProvisionsCalculator.calculateRequiredUnits(
+                for: charter,
+                guests: charter.guests,
+                crewCount: crewCount
+            )
+            let plan = ProvisionsPlan(
+                charterId: charter.id,
+                quality: provisions.quality,
+                requiredUnits: requiredUnits,
+                loadedUnits: provisions.loadedUnits,
+                unitCost: provisions.unitCost,
+                totalCost: Double(provisions.loadedUnits) * provisions.unitCost
+            )
+            let provisionsScore = ProvisionsCalculator.calculateCuisineScore(
+                plan: plan,
+                expectation: charter.cuisineExpectation
+            )
+            // Convert legacy score to bonus (rough approximation)
+            provisionsSatisfactionBonus = (provisionsScore - 3.0) * 5.0
+        }
+        
+        // Check for luxury employees (chef, bartender, masseuse)
+        let hasChef = vessel.assignedCrew.contains { crewId in
+            gameState.hiredCrew.first(where: { $0.id == crewId })?.role == .chef
+        }
+        let hasBartender = vessel.assignedCrew.contains { crewId in
+            gameState.hiredCrew.first(where: { $0.id == crewId })?.role == .bartender
+        }
+        let hasMasseuse = vessel.assignedCrew.contains { crewId in
+            gameState.hiredCrew.first(where: { $0.id == crewId })?.role == .masseuse
+        }
+        let hasLuxuryEmployees = hasChef && hasBartender && hasMasseuse
+        
+        // Scale changes by hoursDelta to convert from per-update to per-hour rates
+        // All changes are now per-hour, scaled by hoursDelta
+        
         // Update guest happiness
-        var happinessChange: Double = 0.0
+        var happinessChangePerHour: Double = 0.0
         
-        // Base service quality
-        happinessChange += crewPerformance.serviceScore * 0.1
+        // Service quality from crew (improved - starts higher, more positive impact)
+        let serviceImpact = (crewPerformance.serviceScore - 3.0) * 2.0 // Per hour: -6 to +4
+        happinessChangePerHour += serviceImpact
         
-        // Weather impact
-        happinessChange += (charterState.weather.guestHappinessModifier - 1.0) * 5.0
+        // Cuisine quality from provisions packages (much more significant)
+        let cuisineImpact = provisionsSatisfactionBonus * 0.5 // Convert % bonus to per-hour change
+        happinessChangePerHour += cuisineImpact
         
-        // Staff stress impact (high stress = lower happiness)
-        happinessChange -= (charterState.staffStress / 100.0) * 0.2
+        // Activities impact
+        let activitiesImpact = (crewPerformance.activitiesScore - 3.0) * 1.5 // Per hour
+        happinessChangePerHour += activitiesImpact
         
+        // Weather impact (scaled appropriately)
+        let weatherModifier = charterState.weather.guestHappinessModifier
+        happinessChangePerHour += (weatherModifier - 1.0) * 3.0 // Per hour: -0.9 (storm) to 0 (sunny)
+        
+        // Staff stress impact (scaled)
+        let stressPenalty = (charterState.staffStress / 100.0) * 2.0 // Per hour: up to -2.0
+        happinessChangePerHour -= stressPenalty
+        
+        // Vessel condition impact
+        let conditionImpact = ((vessel.condition / 100.0) - 0.8) * 1.0 // Per hour
+        happinessChangePerHour += conditionImpact
+        
+        // Positive baseline drift when things are going well
+        if charterState.guestHappiness > 60 && charterState.staffStress < 50 {
+            happinessChangePerHour += 0.5 // Small positive drift
+        }
+        
+        // Premium provisions + luxury employees guarantee high satisfaction
+        if provisionsSatisfactionBonus >= 50.0 && hasLuxuryEmployees {
+            // Ensure we're trending toward 90+
+            if charterState.guestHappiness < 90 {
+                happinessChangePerHour += 5.0 // Strong push toward 90+
+            } else {
+                // Maintain high satisfaction
+                happinessChangePerHour += 1.0
+            }
+        }
+        
+        // Apply change scaled by time delta
+        let happinessChange = happinessChangePerHour * hoursDelta
         charterState.guestHappiness = max(0.0, min(100.0, charterState.guestHappiness + happinessChange))
         
         // Update staff stress
-        var stressChange: Double = 0.0
+        var stressChangePerHour: Double = 0.0
         
-        // Base stress accumulation
-        stressChange += 0.1 // Natural accumulation
+        // Base stress accumulation (much slower - per hour instead of per update)
+        stressChangePerHour += 1.0 // 1 point per hour (was 0.05 per update = 30/hour)
         
-        // Weather impact
-        stressChange += (charterState.weather.staffStressModifier - 1.0) * 2.0
+        // Weather impact (scaled)
+        stressChangePerHour += (charterState.weather.staffStressModifier - 1.0) * 3.0 // Per hour
         
         // Crew experience helps manage stress
         let avgExperience = calculateAverageCrewExperience(vessel: vessel)
-        stressChange -= (avgExperience / 10.0) * 0.05
+        stressChangePerHour -= (avgExperience / 10.0) * 2.0 // Per hour: up to -2.0 with high experience
         
         // Understaffing increases stress
         let crewCount = vessel.assignedCrew.count + (vessel.assignedCaptain != nil ? 1 : 0)
         if crewCount < vessel.crewRec {
-            stressChange += 0.2
+            let shortageRatio = Double(vessel.crewRec - crewCount) / Double(vessel.crewRec)
+            stressChangePerHour += shortageRatio * 5.0 // Per hour: up to +5.0
         }
         
+        // Overstaffing reduces stress
+        if crewCount > vessel.crewRec {
+            stressChangePerHour -= 1.0 // Per hour
+        }
+        
+        // Stress recovery when conditions are good
+        if charterState.staffStress > 30 && charterState.weather == .sunny && crewCount >= vessel.crewRec {
+            stressChangePerHour -= 2.0 // Recovery per hour
+        }
+        
+        // Apply change scaled by time delta
+        let stressChange = stressChangePerHour * hoursDelta
         charterState.staffStress = max(0.0, min(100.0, charterState.staffStress + stressChange))
     }
     
     func calculateCrewPerformance(vessel: Vessel) -> (serviceScore: Double, cuisineScore: Double, activitiesScore: Double) {
-        var serviceScore = 3.0
-        var cuisineScore = 2.0
-        var activitiesScore = 3.0
+        var serviceScore = 3.5 // Start higher (was 2.5)
+        var cuisineScore = 3.0 // Start higher (was 1.5)
+        var activitiesScore = 3.0 // Start higher (was 2.0)
         
-        // Calculate from crew
+        // Captain contribution
+        if let captainId = vessel.assignedCaptain,
+           let captain = gameState.hiredCaptains.first(where: { $0.id == captainId }) {
+            // Captain affects service and safety
+            serviceScore += captain.personality * 0.4 // Personality scales 1-5, adds up to 2.0
+            serviceScore += captain.efficiency * 0.2 // Efficiency adds up to 1.0
+        }
+        
+        // Calculate from crew members
+        var hasChef = false
+        var hasSteward = false
+        var stewardCount = 0
+        
         for crewId in vessel.assignedCrew {
             if let crew = gameState.hiredCrew.first(where: { $0.id == crewId }) {
-                let effectiveness = crew.skillRating * (1.0 - crew.currentStress / 100.0)
+                // Effectiveness based on skill and stress
+                let stressPenalty = crew.currentStress / 100.0
+                let effectiveness = crew.skillRating * (1.0 - stressPenalty * 0.5) // Stress reduces effectiveness
                 
-                if crew.role.affectsService {
+                // Role-specific contributions
+                switch crew.role {
+                case .chef:
+                    hasChef = true
+                    cuisineScore += effectiveness * 1.2 // Chef is crucial for cuisine
+                case .chiefSteward, .steward:
+                    hasSteward = true
+                    stewardCount += 1
+                    serviceScore += effectiveness * 0.4 // Stewards crucial for service
+                case .bartender:
                     serviceScore += effectiveness * 0.3
-                }
-                if crew.role.affectsCuisine {
-                    cuisineScore += effectiveness * 0.5
-                }
-                if crew.role.affectsActivities {
+                    activitiesScore += effectiveness * 0.2
+                case .masseuse:
+                    activitiesScore += effectiveness * 0.5
+                    serviceScore += effectiveness * 0.2
+                case .firstMate, .deckhand, .deckStew:
+                    // Deck crew helps with activities and general service
+                    activitiesScore += effectiveness * 0.2
+                    serviceScore += effectiveness * 0.15
+                case .engineer:
+                    // Engineer helps with safety and vessel reliability
+                    // (No direct impact on service/cuisine/activities scores)
+                    break
+                case .surfInstructor:
+                    // Surf instructor helps with activities
                     activitiesScore += effectiveness * 0.4
+                    serviceScore += effectiveness * 0.1
                 }
             }
         }
         
+        // Penalties for missing key roles
+        if !hasChef {
+            cuisineScore -= 0.8 // Significant penalty for no chef
+        }
+        
+        if !hasSteward {
+            serviceScore -= 0.5 // Penalty for no stewards
+        } else if stewardCount < 2 && vessel.lengthFeet > 80 {
+            // Large vessels need multiple stewards
+            serviceScore -= 0.3
+        }
+        
+        // Ensure scores are within bounds
         return (
-            serviceScore: min(5.0, serviceScore),
-            cuisineScore: min(5.0, cuisineScore),
-            activitiesScore: min(5.0, activitiesScore)
+            serviceScore: max(1.0, min(5.0, serviceScore)),
+            cuisineScore: max(1.0, min(5.0, cuisineScore)),
+            activitiesScore: max(1.0, min(5.0, activitiesScore))
         )
     }
     
@@ -600,14 +946,38 @@ final class GameViewModel: ObservableObject {
             finalStress = charterState.staffStress
         }
         
-        // Clear charter events
-        gameState.charterEvents = []
+        // Complete charter with adjusted values based on happiness/stress FIRST
+        completeCharter(charter, finalHappiness: finalHappiness, finalStress: finalStress)
         
+        // THEN clear charter events and state
+        gameState.charterEvents = []
         gameState.activeCharterState = nil
         showingActiveCharter = false
+    }
+    
+    func skipToCharterEnd() {
+        guard let charterState = gameState.activeCharterState,
+              let charter = gameState.activeCharters.first(where: { $0.id == charterState.charterId }) else {
+            return
+        }
         
-        // Complete charter with adjusted values based on happiness/stress
-        completeCharter(charter, finalHappiness: finalHappiness, finalStress: finalStress)
+        // Stop the timer
+        charterTimer?.invalidate()
+        
+        // Set elapsed time to full duration to complete the charter
+        var updatedState = charterState
+        updatedState.elapsedTime = charter.durationDays * 86400 // Full duration
+        
+        // Final update to metrics before completion
+        if let vessel = gameState.ownedVessels.first(where: { $0.id == charterState.vesselId }) {
+            let hoursDelta = updatedState.elapsedTime / 3600.0
+            updateCharterMetrics(&updatedState, charter: charter, vessel: vessel, hoursDelta: hoursDelta)
+        }
+        
+        gameState.activeCharterState = updatedState
+        
+        // Complete the charter
+        completeActiveCharter(charter)
     }
     
     func loadProvisions(vesselId: String, plan: ProvisionsPlan) -> Bool {
@@ -626,6 +996,20 @@ final class GameViewModel: ObservableObject {
         showToast("Loaded \(plan.loadedUnits) units of \(plan.quality.rawValue) provisions")
         return true
     }
+    
+    func loadProvisionPackages(vesselId: String, packages: SelectedProvisions) -> Bool {
+        guard gameState.cash >= packages.totalCost else {
+            showToast("Insufficient funds for provisions. Need $\(Int(packages.totalCost))")
+            return false
+        }
+        
+        gameState.cash -= packages.totalCost
+        gameState.vesselProvisionPackages[vesselId] = packages
+        
+        let packageNames = packages.packages.compactMap { ProvisionPackageCatalog.package(withId: $0)?.name }
+        showToast("Loaded \(packageNames.count) provision packages")
+        return true
+    }
 
     func completeCharter(_ charter: Charter, finalHappiness: Double = 70.0, finalStress: Double = 20.0) {
         guard let charterIndex = gameState.activeCharters.firstIndex(where: { $0.id == charter.id }),
@@ -636,31 +1020,35 @@ final class GameViewModel: ObservableObject {
 
         let vessel = gameState.ownedVessels[vesselIndex]
 
-        // Calculate satisfaction and tips
-        var satisfaction = calculateSatisfaction(charter: charter, vessel: vessel)
-        
-        // Adjust satisfaction based on guest happiness and staff stress
-        let happinessMultiplier = finalHappiness / 100.0
-        let stressPenalty = finalStress / 100.0 * 0.3 // Up to 30% penalty
-        
-        satisfaction = SatisfactionScores(
-            service: max(1.0, min(5.0, satisfaction.service * happinessMultiplier - stressPenalty)),
-            cuisine: max(1.0, min(5.0, satisfaction.cuisine * happinessMultiplier)),
-            safety: max(1.0, min(5.0, satisfaction.safety - stressPenalty)),
-            comfort: max(1.0, min(5.0, satisfaction.comfort * happinessMultiplier)),
-            activities: max(1.0, min(5.0, satisfaction.activities * happinessMultiplier))
+        // Calculate satisfaction using final happiness and stress from charter
+        let satisfaction = calculateSatisfaction(
+            charter: charter,
+            vessel: vessel,
+            finalHappiness: finalHappiness,
+            finalStress: finalStress
         )
         
-        // Adjust tip rate based on happiness
+        // Calculate tip rate based on satisfaction
         var tipRate = calculateTipRate(charter: charter, satisfaction: satisfaction)
         
-        // Happiness affects tip percentage
-        if finalHappiness < 40 {
+        // Additional happiness modifiers (on top of satisfaction-based tips)
+        if finalHappiness < 30 {
             tipRate = 0.0 // No tip if very unhappy
+        } else if finalHappiness < 50 {
+            tipRate *= 0.3 // Severely reduced tip
         } else if finalHappiness < 60 {
-            tipRate *= 0.5 // Reduced tip
-        } else if finalHappiness >= 90 {
-            tipRate *= 1.5 // Bonus tip for excellent service
+            tipRate *= 0.6 // Reduced tip
+        } else if finalHappiness >= 85 {
+            tipRate *= 1.2 // Bonus tip for excellent service
+        } else if finalHappiness >= 95 {
+            tipRate *= 1.5 // Large bonus for outstanding service
+        }
+        
+        // Staff stress penalty (even if happiness is okay, high stress can reduce tips)
+        if finalStress > 70 {
+            tipRate *= 0.8 // High stress reduces tips
+        } else if finalStress > 50 {
+            tipRate *= 0.9 // Moderate stress slightly reduces tips
         }
         
         // Very low happiness = client refuses full payment
@@ -697,7 +1085,7 @@ final class GameViewModel: ObservableObject {
         let repairCost = vessel.purchasePrice * 0.001 // 0.1% of vessel value
         let cleaningCost = Double(vessel.lengthFeet) * 10.0
         
-        // Calculate spoilage loss from provisions
+        // Calculate spoilage loss from provisions (legacy system only - packages don't spoil)
         var spoilageLoss = 0.0
         if let provisions = gameState.vesselProvisions[vesselId] {
             let crewCount = vessel.assignedCrew.count + (vessel.assignedCaptain != nil ? 1 : 0)
@@ -712,6 +1100,9 @@ final class GameViewModel: ObservableObject {
             // Wipe provisions after charter (as per handoff doc requirement)
             gameState.vesselProvisions.removeValue(forKey: vesselId)
         }
+        
+        // Wipe provision packages after charter (they're consumed)
+        gameState.vesselProvisionPackages.removeValue(forKey: vesselId)
 
         let totalCosts = opexCost + crewCost + repairCost + cleaningCost + spoilageLoss
         let netProfit = totalPay - totalCosts
@@ -753,17 +1144,43 @@ final class GameViewModel: ObservableObject {
     }
 
     // MARK: - Calculations
-    private func calculateSatisfaction(charter: Charter, vessel: Vessel) -> SatisfactionScores {
-        // Service score based on captain personality and crew
-        var service = 3.0
+    private func calculateSatisfaction(charter: Charter, vessel: Vessel, finalHappiness: Double? = nil, finalStress: Double? = nil) -> SatisfactionScores {
+        // Get crew performance scores
+        let crewPerformance = calculateCrewPerformance(vessel: vessel)
+        
+        // Start with crew performance as base
+        var service = crewPerformance.serviceScore
+        var cuisine = crewPerformance.cuisineScore
+        var activities = crewPerformance.activitiesScore
+        var comfort = 3.5 // Base comfort score
+        
+        // Captain contribution (additional to crew)
         if let captainId = vessel.assignedCaptain,
            let captain = gameState.hiredCaptains.first(where: { $0.id == captainId }) {
-            service = captain.personality * 0.8 + 1.0 // Scale personality to 1-5
+            // Service already includes captain, but add personality bonus
+            service += (captain.personality - 3.0) * 0.2 // Adjust around midpoint
         }
         
-        // Cuisine score based on provisions
-        var cuisine = 2.0
-        if let provisions = gameState.vesselProvisions[vessel.id] {
+        // Cuisine: Use provision packages (new system) or legacy provisions
+        if let selectedPackages = gameState.vesselProvisionPackages[vessel.id] {
+            // New package system - calculate cuisine from food packages
+            let foodPackages = selectedPackages.packages.compactMap { id -> ProvisionPackage? in
+                guard let pkg = ProvisionPackageCatalog.package(withId: id) else { return nil }
+                return pkg.category == .food ? pkg : nil
+            }
+            
+            if !foodPackages.isEmpty {
+                // Food packages significantly boost cuisine
+                let foodBonus = foodPackages.reduce(0.0) { $0 + $1.satisfactionBonus }
+                // Convert bonus % to score (e.g., 25% bonus = +1.25 to score)
+                let cuisineBoost = foodBonus / 20.0 // Scale: 20% = +1.0 score
+                cuisine = min(5.0, cuisine + cuisineBoost)
+            } else {
+                // No food packages = penalty
+                cuisine = max(1.0, cuisine - 1.0)
+            }
+        } else if let provisions = gameState.vesselProvisions[vessel.id] {
+            // Legacy system fallback
             let crewCount = vessel.assignedCrew.count + (vessel.assignedCaptain != nil ? 1 : 0)
             let plan = ProvisionsPlan(
                 charterId: charter.id,
@@ -777,42 +1194,97 @@ final class GameViewModel: ObservableObject {
                 unitCost: provisions.unitCost,
                 totalCost: Double(provisions.loadedUnits) * provisions.unitCost
             )
-            cuisine = ProvisionsCalculator.calculateCuisineScore(
+            let provisionsScore = ProvisionsCalculator.calculateCuisineScore(
                 plan: plan,
                 expectation: charter.cuisineExpectation
             )
+            // Blend crew cuisine score with provisions score
+            cuisine = (cuisine * 0.6) + (provisionsScore * 0.4)
         } else {
-            // No provisions = poor cuisine
-            cuisine = 1.0
+            // No provisions = severe penalty
+            cuisine = max(1.0, cuisine - 1.5)
         }
         
-        // Safety score based on captain experience and vessel condition
+        // Activities: Boost from entertainment packages
+        if let selectedPackages = gameState.vesselProvisionPackages[vessel.id] {
+            let entertainmentPackages = selectedPackages.packages.compactMap { id -> ProvisionPackage? in
+                guard let pkg = ProvisionPackageCatalog.package(withId: id) else { return nil }
+                return pkg.category == .entertainment ? pkg : nil
+            }
+            
+            if !entertainmentPackages.isEmpty {
+                let entertainmentBonus = entertainmentPackages.reduce(0.0) { $0 + $1.satisfactionBonus }
+                let activitiesBoost = entertainmentBonus / 20.0 // Scale: 20% = +1.0 score
+                activities = min(5.0, activities + activitiesBoost)
+            }
+        }
+        
+        // Comfort: Boost from comfort/security packages
+        if let selectedPackages = gameState.vesselProvisionPackages[vessel.id] {
+            let comfortPackages = selectedPackages.packages.compactMap { id -> ProvisionPackage? in
+                guard let pkg = ProvisionPackageCatalog.package(withId: id) else { return nil }
+                return pkg.category == .comfortSecurity ? pkg : nil
+            }
+            
+            if !comfortPackages.isEmpty {
+                let comfortBonus = comfortPackages.reduce(0.0) { $0 + $1.satisfactionBonus }
+                let comfortBoost = comfortBonus / 20.0 // Scale: 20% = +1.0 score
+                comfort = min(5.0, comfort + comfortBoost)
+            }
+        }
+        
+        // Safety: Captain experience + vessel condition + crew experience
         var safety = 3.0
         if let captainId = vessel.assignedCaptain,
            let captain = gameState.hiredCaptains.first(where: { $0.id == captainId }) {
-            safety = captain.experience * 0.9 + (vessel.condition / 100.0) * 0.5
+            safety = captain.experience * 0.7 + (vessel.condition / 100.0) * 1.5
+        } else {
+            safety = (vessel.condition / 100.0) * 2.0 // No captain = lower safety
         }
-        safety = min(5.0, safety)
         
-        // Comfort based on vessel and sea state (simplified for now)
-        let comfort = 4.0
+        // Add crew experience bonus
+        let avgExperience = calculateAverageCrewExperience(vessel: vessel)
+        safety += (avgExperience / 10.0) * 0.3
+        safety = min(5.0, max(1.0, safety))
         
-        // Activities based on support items and vessel capabilities
-        var activities = 3.0
+        // Comfort: Vessel quality + weather (if available from charter state)
+        comfort += (vessel.condition / 100.0) * 0.8 // Condition affects comfort
+        if vessel.lengthFeet > 100 {
+            comfort += 0.3 // Larger vessels = more comfortable
+        } else if vessel.lengthFeet < 50 {
+            comfort -= 0.2 // Smaller vessels = less comfortable
+        }
+        
+        // Activities: Support items + vessel capabilities + crew
         if !vessel.supportItems.isEmpty {
-            activities = 4.0
+            activities += 0.5
         }
         if charter.category == .adventure && vessel.isExplorer {
             activities += 0.5
         }
-        activities = min(5.0, activities)
-
+        
+        // Apply final happiness and stress modifiers if provided
+        if let happiness = finalHappiness, let stress = finalStress {
+            // Happiness affects all scores
+            let happinessMultiplier = happiness / 100.0
+            
+            // Stress penalty affects service and safety
+            let stressPenalty = (stress / 100.0) * 0.4 // Up to 40% penalty
+            
+            service = max(1.0, min(5.0, service * happinessMultiplier - stressPenalty))
+            cuisine = max(1.0, min(5.0, cuisine * happinessMultiplier))
+            safety = max(1.0, min(5.0, safety - stressPenalty))
+            comfort = max(1.0, min(5.0, comfort * happinessMultiplier))
+            activities = max(1.0, min(5.0, activities * happinessMultiplier))
+        }
+        
+        // Ensure all scores are within bounds
         return SatisfactionScores(
-            service: service,
-            cuisine: cuisine,
-            safety: safety,
-            comfort: comfort,
-            activities: activities
+            service: max(1.0, min(5.0, service)),
+            cuisine: max(1.0, min(5.0, cuisine)),
+            safety: max(1.0, min(5.0, safety)),
+            comfort: max(1.0, min(5.0, comfort)),
+            activities: max(1.0, min(5.0, activities))
         )
     }
 

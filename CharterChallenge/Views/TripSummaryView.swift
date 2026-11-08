@@ -50,11 +50,19 @@ struct TripSummaryView: View {
                             color: .green
                         )
 
-                        SummaryRow(
-                            label: "Tip (\(Int(summary.tipRate * 100))%)",
-                            value: summary.tipAmount,
-                            color: .green
-                        )
+                        if summary.tipAmount > 0 {
+                            SummaryRow(
+                                label: "Tip (\(Int(summary.tipRate * 100))%)",
+                                value: summary.tipAmount,
+                                color: .green
+                            )
+                        } else {
+                            SummaryRow(
+                                label: "Tip",
+                                value: 0,
+                                color: .secondary
+                            )
+                        }
 
                         Divider()
 
@@ -119,6 +127,31 @@ struct TripSummaryView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Guest Satisfaction")
                             .font(.headline)
+                        
+                        // Tip indicator based on satisfaction
+                        if summary.tipAmount > 0 {
+                            HStack {
+                                Image(systemName: "star.fill")
+                                    .foregroundColor(.yellow)
+                                    .font(.caption)
+                                Text("Guests were pleased with the service")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                            }
+                            .padding(.bottom, 4)
+                        } else if summary.tipRate == 0 {
+                            HStack {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                    .font(.caption)
+                                Text("Guests were not satisfied")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                            }
+                            .padding(.bottom, 4)
+                        }
 
                         SatisfactionBar(label: "Service", score: summary.satisfaction.service)
                         SatisfactionBar(label: "Cuisine", score: summary.satisfaction.cuisine)
@@ -137,6 +170,21 @@ struct TripSummaryView: View {
                                 .font(.headline)
                                 .fontWeight(.bold)
                                 .foregroundColor(scoreColor(summary.satisfaction.overall))
+                        }
+                        
+                        // Tip explanation
+                        if summary.tipAmount > 0 {
+                            Divider()
+                            HStack {
+                                Text("Tip earned:")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text("$\(Int(summary.tipAmount).formatted())")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(.green)
+                            }
                         }
                     }
                     .padding()

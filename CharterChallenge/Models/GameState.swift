@@ -14,7 +14,8 @@ struct GameState: Codable, Sendable {
     var completedCharters: [Charter]
 
     // Provisions tracking
-    var vesselProvisions: [String: Provisions] // vesselId: provisions
+    var vesselProvisions: [String: Provisions] // vesselId: provisions (legacy)
+    var vesselProvisionPackages: [String: SelectedProvisions] // vesselId: selected packages (new system)
     
     // Active charter simulation state
     var activeCharterState: ActiveCharterState?
@@ -32,6 +33,7 @@ struct GameState: Codable, Sendable {
         self.activeCharters = []
         self.completedCharters = []
         self.vesselProvisions = [:]
+        self.vesselProvisionPackages = [:]
         self.activeCharterState = nil
         self.charterEvents = []
     }

@@ -5,121 +5,100 @@ struct ProvisionsPlanningView: View {
     let charter: Charter
     let vessel: Vessel
     @Binding var isPresented: Bool
-    @State private var selectedQuality: ProvisionQuality = .standard
-    @State private var loadedUnits: Int = 0
+    @State private var selectedCategory: ProvisionCategory = .food
+    @State private var selectedPackages = SelectedProvisions()
     
     var crewCount: Int {
         vessel.assignedCrew.count + (vessel.assignedCaptain != nil ? 1 : 0)
     }
     
-    var requiredUnits: Int {
-        ProvisionsCalculator.calculateRequiredUnits(
-            for: charter,
-            guests: charter.guests,
-            crewCount: crewCount
-        )
-    }
-    
-    var plan: ProvisionsPlan {
-        ProvisionsCalculator.createPlan(
-            for: charter,
-            guests: charter.guests,
-            crewCount: crewCount,
-            quality: selectedQuality,
-            loadedUnits: loadedUnits == 0 ? nil : loadedUnits
-        )
-    }
-    
     var body: some View {
         NavigationView {
-            Form {
-                Section("Charter Details") {
-                    HStack {
-                        Text("Guests")
-                        Spacer()
-                        Text("\(charter.guests)")
-                    }
-                    HStack {
-                        Text("Crew")
-                        Spacer()
-                        Text("\(crewCount)")
-                    }
-                    HStack {
-                        Text("Duration")
-                        Spacer()
-                        Text("\(Int(ceil(charter.durationDays))) days")
+            VStack(spacing: 0) {
+                // Category Picker
+                Picker("Category", selection: $selectedCategory) {
+                    ForEach(ProvisionCategory.allCases, id: \.self) { category in
+                        HStack {
+                            Image(systemName: category.icon)
+                            Text(category.rawValue)
+                        }
+                        .tag(category)
                     }
                 }
+                .pickerStyle(.segmented)
+                .padding()
                 
-                Section("Required Provisions") {
-                    HStack {
-                        Text("Required Units")
-                        Spacer()
-                        Text("\(requiredUnits)")
-                            .fontWeight(.semibold)
-                    }
-                    
-                    HStack {
-                        Text("Vessel Capacity")
-                        Spacer()
-                        Text("\(vessel.pantryUnits + vessel.coldStorageUnits) units")
-                            .foregroundColor(.secondary)
-                    }
-                }
-                
-                Section("Provision Quality") {
-                    Picker("Quality", selection: $selectedQuality) {
-                        ForEach([ProvisionQuality.basic, .standard, .premium], id: \.self) { quality in
-                            Text(quality.rawValue).tag(quality)
+                // Package List
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        ForEach(ProvisionPackageCatalog.packages(for: selectedCategory)) { package in
+                            PackageCard(
+                                package: package,
+                                isSelected: selectedPackages.hasPackage(package.id),
+                                onToggle: {
+                                    if selectedPackages.hasPackage(package.id) {
+                                        selectedPackages.removePackage(package.id)
+                                    } else {
+                                        selectedPackages.addPackage(package.id)
+                                    }
+                                }
+                            )
                         }
                     }
-                    .pickerStyle(.segmented)
-                    
-                    HStack {
-                        Text("Unit Cost")
-                        Spacer()
-                        Text("$\(Int(ProvisionsCalculator.unitCost(for: selectedQuality)))")
-                    }
+                    .padding()
                 }
                 
-                Section("Load Provisions") {
-                    Stepper("Units to Load: \(loadedUnits == 0 ? requiredUnits : loadedUnits)", value: $loadedUnits, in: 0...max(requiredUnits * 2, vessel.pantryUnits + vessel.coldStorageUnits))
+                // Summary Footer
+                VStack(spacing: 12) {
+                    Divider()
                     
-                    if loadedUnits == 0 {
-                        Text("Will load \(requiredUnits) units (recommended)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    } else if loadedUnits < requiredUnits {
-                        Text("⚠️ Under-provisioned by \(requiredUnits - loadedUnits) units")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                    } else if loadedUnits > requiredUnits {
-                        Text("⚠️ Over-provisioned by \(loadedUnits - requiredUnits) units (risk of spoilage)")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                    }
-                }
-                
-                Section("Cost Summary") {
                     HStack {
-                        Text("Total Cost")
+                        Text("Total Cost:")
+                            .font(.headline)
                         Spacer()
-                        Text("$\(Int(plan.totalCost))")
+                        Text("$\(Int(selectedPackages.totalCost))")
                             .font(.headline)
                             .foregroundColor(.green)
                     }
                     
-                    if plan.remainingUnits > 0 {
+                    HStack {
+                        Text("Total Satisfaction Bonus:")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("+\(Int(selectedPackages.totalSatisfactionBonus))%")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.blue)
+                    }
+                    
+                    // Check for luxury employees
+                    let hasChef = vessel.assignedCrew.contains { crewId in
+                        gameVM.gameState.hiredCrew.first(where: { $0.id == crewId })?.role == .chef
+                    }
+                    let hasBartender = vessel.assignedCrew.contains { crewId in
+                        gameVM.gameState.hiredCrew.first(where: { $0.id == crewId })?.role == .bartender
+                    }
+                    let hasMasseuse = vessel.assignedCrew.contains { crewId in
+                        gameVM.gameState.hiredCrew.first(where: { $0.id == crewId })?.role == .masseuse
+                    }
+                    
+                    if selectedPackages.totalSatisfactionBonus >= 50.0 && hasChef && hasBartender && hasMasseuse {
                         HStack {
-                            Text("Estimated Spoilage Loss")
-                            Spacer()
-                            Text("$\(Int(plan.spoilageLoss))")
-                                .foregroundColor(.orange)
+                            Image(systemName: "star.fill")
+                                .foregroundColor(.yellow)
+                            Text("Premium setup guarantees 90+ satisfaction!")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.green)
                         }
+                        .padding(.top, 4)
                     }
                 }
+                .padding()
+                .background(Color(.systemGray6))
             }
-            .navigationTitle("Plan Provisions")
+            .navigationTitle("Select Provisions")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -129,21 +108,94 @@ struct ProvisionsPlanningView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Load") {
-                        let finalPlan = ProvisionsPlan(
-                            charterId: charter.id,
-                            quality: selectedQuality,
-                            requiredUnits: requiredUnits,
-                            loadedUnits: loadedUnits == 0 ? requiredUnits : loadedUnits,
-                            unitCost: ProvisionsCalculator.unitCost(for: selectedQuality),
-                            totalCost: Double(loadedUnits == 0 ? requiredUnits : loadedUnits) * ProvisionsCalculator.unitCost(for: selectedQuality)
-                        )
-                        gameVM.loadProvisions(vesselId: vessel.id, plan: finalPlan)
+                        gameVM.loadProvisionPackages(vesselId: vessel.id, packages: selectedPackages)
                         isPresented = false
                     }
-                    .disabled(gameVM.gameState.cash < plan.totalCost)
+                    .disabled(gameVM.gameState.cash < selectedPackages.totalCost || selectedPackages.packages.isEmpty)
                 }
             }
         }
     }
 }
 
+struct PackageCard: View {
+    let package: ProvisionPackage
+    let isSelected: Bool
+    let onToggle: () -> Void
+    
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 12) {
+                // Selection Indicator
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundColor(isSelected ? .blue : .secondary)
+                
+                VStack(alignment: .leading, spacing: 6) {
+                    // Package Name
+                    Text(package.name)
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                    
+                    // Price Rating
+                    HStack(spacing: 4) {
+                        Text("Price:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        ForEach(1...5, id: \.self) { rating in
+                            Image(systemName: rating <= package.priceRating ? "dollarsign.circle.fill" : "dollarsign.circle")
+                                .font(.caption2)
+                                .foregroundColor(rating <= package.priceRating ? .green : .gray)
+                        }
+                    }
+                    
+                    // Satisfaction Bonus
+                    HStack {
+                        Image(systemName: "star.fill")
+                            .font(.caption2)
+                            .foregroundColor(.yellow)
+                        Text("+\(Int(package.satisfactionBonus))% satisfaction")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.blue)
+                    }
+                    
+                    // Risk Warning (if applicable)
+                    if let riskChance = package.riskChance, let riskImpact = package.riskImpact {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption2)
+                                .foregroundColor(.orange)
+                            if let condition = package.specialCondition {
+                                Text(condition)
+                                    .font(.caption2)
+                                    .foregroundColor(.orange)
+                            } else {
+                                Text("\(Int(riskChance * 100))% chance: \(riskImpact > 0 ? "+" : "")\(Int(riskImpact))% satisfaction")
+                                    .font(.caption2)
+                                    .foregroundColor(.orange)
+                            }
+                        }
+                    }
+                }
+                
+                Spacer()
+                
+                // Cost
+                VStack(alignment: .trailing) {
+                    Text("$\(Int(package.baseCost))")
+                        .font(.headline)
+                        .foregroundColor(.green)
+                }
+            }
+            .padding()
+            .background(isSelected ? Color.blue.opacity(0.1) : Color(.systemBackground))
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 2)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}

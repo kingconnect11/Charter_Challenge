@@ -33,15 +33,27 @@ struct CharterEventGenerator {
         crewCount: Int,
         crewStress: Double
     ) -> CharterEvent? {
-        // Higher stress = more likely to have incidents
-        let incidentChance = crewStress / 100.0 * 0.1 // Up to 10% chance per update
+        // Reduced overall event frequency - only 30% chance per check (roughly once per 3 hours)
+        if Double.random(in: 0...1) > 0.3 {
+            return nil
+        }
+        
+        // Higher stress = more likely to have incidents (but less frequent overall)
+        let incidentChance = crewStress / 100.0 * 0.3 // Up to 30% chance when stress is high
         
         if Double.random(in: 0...1) < incidentChance {
             return generateIncident(charterState: charterState, crewStress: crewStress)
         }
         
+        // Positive events are more common when things are going well
+        if charterState.guestHappiness > 70 {
+            if Double.random(in: 0...1) < 0.4 { // 40% chance for positive events when happy
+                return generatePositiveEvent(charterState: charterState)
+            }
+        }
+        
         // Guest feedback based on happiness
-        if Double.random(in: 0...1) < 0.05 { // 5% chance
+        if Double.random(in: 0...1) < 0.2 { // 20% chance
             if charterState.guestHappiness > 80 {
                 return generatePositiveFeedback()
             } else if charterState.guestHappiness < 50 {
@@ -49,22 +61,71 @@ struct CharterEventGenerator {
             }
         }
         
-        // Weather-related events
-        if charterState.weather == .storm && Double.random(in: 0...1) < 0.1 {
+        // Weather-related events (less frequent)
+        if charterState.weather == .storm && Double.random(in: 0...1) < 0.2 {
             return generateWeatherEvent(charterState: charterState)
         }
         
-        // Equipment issues (more likely with high stress or poor maintenance)
-        if vessel.condition < 70 && Double.random(in: 0...1) < 0.03 {
+        // Equipment issues (less frequent)
+        if vessel.condition < 70 && Double.random(in: 0...1) < 0.1 {
             return generateEquipmentFailure(vessel: vessel)
         }
         
-        // Smooth sailing (positive event)
-        if charterState.guestHappiness > 75 && crewStress < 40 && Double.random(in: 0...1) < 0.02 {
-            return generateSmoothSailing()
+        // Neutral/interesting events
+        if Double.random(in: 0...1) < 0.3 {
+            return generateNeutralEvent(charterState: charterState)
         }
         
         return nil
+    }
+    
+    private static func generatePositiveEvent(charterState: ActiveCharterState) -> CharterEvent {
+        let events = [
+            ("Beautiful sunset over the water", 3.0, -1.0, 0.0),
+            ("Dolphin pod spotted alongside", 4.0, -1.0, 0.0),
+            ("Perfect weather for water activities", 2.0, -0.5, 0.0),
+            ("Guests enjoying the scenery", 2.0, 0.0, 0.0),
+            ("Smooth sailing conditions", 3.0, -1.0, 0.0),
+            ("Wildlife sighting excites guests", 3.0, 0.0, 0.0)
+        ]
+        
+        let event = events.randomElement()!
+        
+        return CharterEvent(
+            id: UUID().uuidString,
+            type: .smoothSailing,
+            message: event.0,
+            timestamp: charterState.elapsedTime,
+            impact: CharterEvent.EventImpact(
+                guestHappinessDelta: event.1,
+                staffStressDelta: event.2,
+                costDelta: event.3
+            )
+        )
+    }
+    
+    private static func generateNeutralEvent(charterState: ActiveCharterState) -> CharterEvent {
+        let events = [
+            ("Arrived at scenic anchorage", 1.0, 0.0, 0.0),
+            ("Local port visit - guests exploring", 2.0, 0.0, 0.0),
+            ("Crew performing routine maintenance", 0.0, 1.0, 0.0),
+            ("Weather clearing up", 1.0, -0.5, 0.0),
+            ("Guests taking photos of the journey", 1.0, 0.0, 0.0)
+        ]
+        
+        let event = events.randomElement()!
+        
+        return CharterEvent(
+            id: UUID().uuidString,
+            type: .smoothSailing,
+            message: event.0,
+            timestamp: charterState.elapsedTime,
+            impact: CharterEvent.EventImpact(
+                guestHappinessDelta: event.1,
+                staffStressDelta: event.2,
+                costDelta: event.3
+            )
+        )
     }
     
     private static func generateIncident(charterState: ActiveCharterState, crewStress: Double) -> CharterEvent {

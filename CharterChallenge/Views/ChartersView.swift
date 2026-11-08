@@ -29,7 +29,10 @@ struct ChartersView: View {
                     ScrollView {
                         LazyVStack(spacing: 16) {
                             ForEach(gameVM.gameState.availableCharters) { charter in
-                                AvailableCharterCard(charter: charter)
+                                NavigationLink(destination: CharterDetailView(charter: charter)) {
+                                    AvailableCharterCard(charter: charter)
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
                         .padding()
@@ -43,7 +46,10 @@ struct ChartersView: View {
                     ScrollView {
                         LazyVStack(spacing: 16) {
                             ForEach(gameVM.gameState.activeCharters) { charter in
-                                ActiveCharterCard(charter: charter)
+                                NavigationLink(destination: CharterDetailView(charter: charter)) {
+                                    ActiveCharterCard(charter: charter)
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
                         .padding()
@@ -57,7 +63,10 @@ struct ChartersView: View {
                     ScrollView {
                         LazyVStack(spacing: 16) {
                             ForEach(gameVM.gameState.completedCharters) { charter in
-                                CompletedCharterCard(charter: charter)
+                                NavigationLink(destination: CharterDetailView(charter: charter)) {
+                                    CompletedCharterCard(charter: charter)
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
                         .padding()
@@ -182,6 +191,9 @@ struct AvailableCharterCard: View {
             }
 
             // Accept Button
+            let availableVessels = gameVM.gameState.ownedVessels.filter { $0.status == .moored }
+            let canAccept = !availableVessels.isEmpty && gameVM.gameState.reputation >= charter.reputationRequired
+            
             Button(action: {
                 showingAcceptSheet = true
             }) {
@@ -189,9 +201,24 @@ struct AvailableCharterCard: View {
                     .fontWeight(.semibold)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
-                    .background(Color.green)
+                    .background(canAccept ? Color.green : Color.gray)
                     .foregroundColor(.white)
                     .cornerRadius(8)
+            }
+            .disabled(!canAccept)
+            
+            if !canAccept {
+                if availableVessels.isEmpty {
+                    Text("No available vessels (must be moored)")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .padding(.top, 4)
+                } else if gameVM.gameState.reputation < charter.reputationRequired {
+                    Text("Requires \(charter.reputationRequired) reputation (you have \(gameVM.gameState.reputation))")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .padding(.top, 4)
+                }
             }
         }
         .padding()

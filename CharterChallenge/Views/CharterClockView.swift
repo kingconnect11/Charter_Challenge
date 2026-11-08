@@ -71,6 +71,27 @@ struct CharterClockView: View {
                     
                     Divider()
                     
+                    // Skip Button
+                    Button(action: {
+                        showingControls = false
+                        gameVM.skipToCharterEnd()
+                    }) {
+                        HStack {
+                            Image(systemName: "forward.end.fill")
+                                .font(.headline)
+                            Text("Skip to End")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(Color.purple)
+                        .cornerRadius(8)
+                    }
+                    
+                    Divider()
+                    
                     // Time Display
                     if let charter = charter {
                         VStack(alignment: .leading, spacing: 4) {
@@ -84,12 +105,12 @@ struct CharterClockView: View {
                                     .fontWeight(.semibold)
                             }
                             
+                            let remaining = charter.durationDays * 86400 - state.elapsedTime
                             HStack {
                                 Text("Remaining:")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 Spacer()
-                                let remaining = charter.durationDays * 86400 - state.elapsedTime
                                 Text(formatTime(max(0, remaining)))
                                     .font(.caption)
                                     .fontWeight(.semibold)

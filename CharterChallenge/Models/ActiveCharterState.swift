@@ -13,6 +13,9 @@ struct ActiveCharterState: Codable, Sendable {
     var elapsedTime: TimeInterval // seconds
     var isPaused: Bool
     var speedMultiplier: Double // 1x, 2x, 5x, 10x, 20x
+    var route: MaritimeRoute? // Maritime route with waypoints
+    var riskCheckAccumulator: Double = 0.0 // Accumulator for risk checks
+    var eventCheckAccumulator: Double = 0.0 // Accumulator for event checks
 }
 
 // MARK: - Route Position

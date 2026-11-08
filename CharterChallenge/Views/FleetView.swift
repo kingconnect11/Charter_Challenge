@@ -44,7 +44,10 @@ struct FleetView: View {
                     ScrollView {
                         LazyVStack(spacing: 16) {
                             ForEach(gameVM.gameState.ownedVessels) { vessel in
-                                OwnedVesselCard(vessel: vessel)
+                                NavigationLink(destination: VesselDetailView(vessel: vessel)) {
+                                    OwnedVesselCard(vessel: vessel)
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
                         .padding()
@@ -62,6 +65,24 @@ struct VesselCatalogCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // Vessel Image
+            if let imageName = vessel.imageName {
+                Image(imageName)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(height: 200)
+                    .clipped()
+                    .cornerRadius(8)
+            } else {
+                Image(systemName: "sailboat")
+                    .font(.system(size: 60))
+                    .foregroundColor(.gray)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 200)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(8)
+            }
+            
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(vessel.name)
@@ -144,6 +165,24 @@ struct OwnedVesselCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // Vessel Image
+            if let imageName = vessel.imageName {
+                Image(imageName)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(height: 150)
+                    .clipped()
+                    .cornerRadius(8)
+            } else {
+                Image(systemName: "sailboat")
+                    .font(.system(size: 50))
+                    .foregroundColor(.gray)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 150)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(8)
+            }
+            
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(vessel.name)

@@ -245,6 +245,16 @@ struct VesselInfoCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // Vessel Image
+            if let imageName = vessel.imageName {
+                Image(imageName)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(height: 150)
+                    .clipped()
+                    .cornerRadius(8)
+            }
+            
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(vessel.name)

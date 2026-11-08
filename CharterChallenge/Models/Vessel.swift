@@ -24,6 +24,7 @@ struct Vessel: Identifiable, Codable, Hashable, Sendable {
     let pantryUnits: Int
     let coldStorageUnits: Int
     let galleyGrade: Int // 1-5
+    let imageName: String? // Optional image name in Assets
 
     // Instance state (for owned vessels)
     var status: VesselStatus = .moored
@@ -42,7 +43,7 @@ struct Vessel: Identifiable, Codable, Hashable, Sendable {
         case id, name, category, lengthFeet, speedKnots, rangeNM
         case costPerNM, dailyOpex, guestCapacity, earningMultiplier
         case purchasePrice, isExplorer, crewMin, crewRec, crewMax
-        case pantryUnits, coldStorageUnits, galleyGrade
+        case pantryUnits, coldStorageUnits, galleyGrade, imageName
         // Runtime properties (status, currentLocation, etc.) are not in JSON
         // They use default values when decoding
     }

@@ -23,9 +23,11 @@ struct ActiveCharterView: View {
                     HStack {
                         Spacer()
                         CharterClockView()
+                            .padding(.top, 8)
                     }
                     Spacer()
                 }
+                .zIndex(10)
                 
                 // Right Side: Progress Indicator
                 VStack {
@@ -36,6 +38,7 @@ struct ActiveCharterView: View {
                             .padding(.bottom, 80) // Space above tab bar
                     }
                 }
+                .zIndex(9)
                 
                 // Bottom Right: Status Menu Button
                 VStack {
@@ -47,11 +50,11 @@ struct ActiveCharterView: View {
                                 showingStatusMenu.toggle()
                             }
                         }) {
-                            Image(systemName: "info.circle.fill")
+                            Image(systemName: showingStatusMenu ? "xmark.circle.fill" : "info.circle.fill")
                                 .font(.title2)
                                 .foregroundColor(.white)
                                 .frame(width: 44, height: 44)
-                                .background(Color.blue)
+                                .background(showingStatusMenu ? Color.red : Color.blue)
                                 .clipShape(Circle())
                                 .shadow(radius: 4)
                         }
@@ -59,6 +62,7 @@ struct ActiveCharterView: View {
                         .padding(.bottom, 80) // Space above tab bar
                     }
                 }
+                .zIndex(11)
                 
                 // Status Pop-out Menu
                 if showingStatusMenu {
@@ -72,6 +76,7 @@ struct ActiveCharterView: View {
                         }
                     }
                     .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .zIndex(8)
                 }
             } else {
                 Text("No active charter")
@@ -96,6 +101,7 @@ struct ActiveCharterMapView: View {
     let vessel: Vessel
     let charterState: ActiveCharterState
     @State private var region: MKCoordinateRegion
+    @State private var vesselCoordinate: CLLocationCoordinate2D
     
     init(charter: Charter, vessel: Vessel, charterState: ActiveCharterState) {
         self.charter = charter
@@ -111,27 +117,68 @@ struct ActiveCharterMapView: View {
             center: center,
             span: MKCoordinateSpan(latitudeDelta: 2.0, longitudeDelta: 2.0)
         ))
+        _vesselCoordinate = State(initialValue: center)
     }
     
     var body: some View {
-        Map(coordinateRegion: $region, annotationItems: mapAnnotations) { item in
-            MapAnnotation(coordinate: item.coordinate) {
-                if item.isVessel {
-                    VesselMovementMarker(vessel: vessel, progress: charterState.currentPosition.progress)
-                        .animation(.easeInOut(duration: 0.3), value: charterState.currentPosition.currentLatitude)
-                        .animation(.easeInOut(duration: 0.3), value: charterState.currentPosition.currentLongitude)
-                } else if item.isPort {
-                    PortMarker(port: item.port!, isSelected: false)
+        Group {
+            // Map with route overlay and annotations
+            if let origin = originPort, let dest = destPort {
+                MapViewWithRoute(
+                    origin: origin.coordinate,
+                    destination: dest.coordinate,
+                    currentPosition: vesselCoordinate,
+                    annotations: mapAnnotations,
+                    route: charterState.route,
+                    region: $region
+                )
+            } else {
+                // Fallback if ports not found - use standard Map
+                Map(coordinateRegion: $region, annotationItems: mapAnnotations) { item in
+                    MapAnnotation(coordinate: item.coordinate) {
+                        if item.isVessel {
+                            VesselMovementMarker(vessel: vessel, progress: charterState.currentPosition.progress)
+                        } else if item.isPort {
+                            PortMarker(port: item.port!, isSelected: false)
+                        }
+                    }
                 }
             }
         }
         .onChange(of: charterState.currentPosition.currentLatitude) { newLat in
-            withAnimation(.easeInOut(duration: 0.3)) {
-                updateRegion()
-            }
+            updateVesselPosition()
         }
         .onChange(of: charterState.currentPosition.currentLongitude) { newLon in
-            withAnimation(.easeInOut(duration: 0.3)) {
+            updateVesselPosition()
+        }
+    }
+    
+    private func updateVesselPosition() {
+        // Update vessel coordinate smoothly
+        let newCoordinate = CLLocationCoordinate2D(
+            latitude: charterState.currentPosition.currentLatitude,
+            longitude: charterState.currentPosition.currentLongitude
+        )
+        
+        // Only update if coordinate changed significantly (performance optimization)
+        let coordDiff = abs(vesselCoordinate.latitude - newCoordinate.latitude) +
+                       abs(vesselCoordinate.longitude - newCoordinate.longitude)
+        
+        if coordDiff > 0.0001 { // Only update if moved more than ~11 meters
+            // Use shorter animation duration for smoother updates
+            withAnimation(.linear(duration: 0.1)) {
+                vesselCoordinate = newCoordinate
+            }
+        }
+        
+        // Update region less frequently to avoid flicker and improve performance
+        let latDiff = abs(region.center.latitude - newCoordinate.latitude)
+        let lonDiff = abs(region.center.longitude - newCoordinate.longitude)
+        
+        // Only update region if vessel moved significantly (increased threshold for better performance)
+        if latDiff > 0.08 || lonDiff > 0.08 {
+            // Use longer animation for region updates to smooth camera movement
+            withAnimation(.easeInOut(duration: 0.8)) {
                 updateRegion()
             }
         }
@@ -168,11 +215,7 @@ struct ActiveCharterMapView: View {
             items.append(ActiveCharterAnnotation(port: destPort))
         }
         
-        // Add vessel at current position (with smooth animation)
-        let vesselCoordinate = CLLocationCoordinate2D(
-            latitude: charterState.currentPosition.currentLatitude,
-            longitude: charterState.currentPosition.currentLongitude
-        )
+        // Add vessel at current position (use stable coordinate state)
         items.append(ActiveCharterAnnotation(
             vessel: vessel,
             at: vesselCoordinate
@@ -209,18 +252,45 @@ struct VesselMovementMarker: View {
     let progress: Double
     
     var body: some View {
-        VStack {
-            Image(systemName: "sailboat.fill")
-                .font(.system(size: 30))
-                .foregroundColor(.purple)
-                .shadow(color: .black.opacity(0.3), radius: 3)
+        VStack(spacing: 0) {
+            // Vessel image floating above
+            if let imageName = vessel.imageName {
+                Image(imageName)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 60, height: 60)
+                    .shadow(color: .black.opacity(0.4), radius: 6, x: 0, y: 2)
+            } else {
+                Image(systemName: "sailboat.fill")
+                    .font(.system(size: 30))
+                    .foregroundColor(.white)
+                    .padding(10)
+                    .background(
+                        Circle()
+                            .fill(Color.blue)
+                            .shadow(color: .black.opacity(0.3), radius: 4)
+                    )
+            }
             
+            // Arrow indicator pointing down
+            Image(systemName: "arrow.down")
+                .font(.system(size: 16))
+                .foregroundColor(.blue)
+                .padding(.top, -2)
+            
+            // Progress badge
             Text("\(Int(progress * 100))%")
                 .font(.caption2)
-                .padding(4)
-                .background(Color.purple.opacity(0.8))
+                .fontWeight(.bold)
                 .foregroundColor(.white)
-                .cornerRadius(4)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(
+                    Capsule()
+                        .fill(Color.purple)
+                        .shadow(color: .black.opacity(0.2), radius: 2)
+                )
+                .padding(.top, 2)
         }
     }
 }

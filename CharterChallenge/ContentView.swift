@@ -56,14 +56,20 @@ struct ContentView: View {
         .overlay {
             // Active Charter Overlay (keeps tab bar visible)
             if gameVM.showingActiveCharter {
-                NavigationView {
-                    ActiveCharterView()
-                        .environmentObject(gameVM)
+                VStack(spacing: 0) {
+                    NavigationView {
+                        ActiveCharterView()
+                            .environmentObject(gameVM)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    
+                    // Spacer to preserve tab bar (typically ~49-83 points)
+                    Spacer()
+                        .frame(height: 0)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(.systemBackground))
-                .ignoresSafeArea(.container, edges: .top)
-                // Don't ignore bottom safe area to keep tab bar visible
+                .ignoresSafeArea(.container, edges: [.top, .leading, .trailing])
+                // Bottom safe area NOT ignored - preserves tab bar
                 .transition(.opacity)
                 .zIndex(1)
             }
